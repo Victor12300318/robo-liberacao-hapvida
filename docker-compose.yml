@@ -1,0 +1,17 @@
+version: "3.8"
+
+services:
+  robo-liberacao:
+    build: .
+    container_name: robo-liberacao-worker
+    restart: always
+    env_file:
+      - .env
+    # Adiciona suporte para acessar o PostgreSQL rodando no localhost da VPS/Host
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

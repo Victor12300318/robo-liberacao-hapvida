@@ -1,0 +1,9 @@
+.env
+.git
+.gitignore
+*.png
+__pycache__/
+*.pyc
+venv/
+.venv/
+docker-compose.override.yml

@@ -117,8 +117,9 @@ def main():
                     # Envia alerta no Slack via webhook do n8n
                     enviar_alerta_slack(cpf, ticket, mensagem)
                     
-                    # Limpa o screenshot de erro local se houver
-                    if caminho_arquivo and os.path.exists(caminho_arquivo):
+                    # Limpa o screenshot de erro local apenas se estiver em modo headless (VPS/Produção)
+                    # Se estiver em modo visual (desenvolvimento local), mantém para o desenvolvedor analisar!
+                    if headless_mode and caminho_arquivo and os.path.exists(caminho_arquivo):
                         try:
                             os.remove(caminho_arquivo)
                             logger.info(f"Screenshot de erro local {caminho_arquivo} removido.")

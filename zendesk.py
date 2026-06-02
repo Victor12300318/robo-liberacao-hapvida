@@ -100,7 +100,7 @@ def resolver_ticket_com_mensagem_publica(ticket_id, mensagem, atendente_nome="Ro
             "status": "solved",
             "custom_fields": [
                 {"id": 17378080644759, "value": "realizou_pagamento"},
-                {"id": 24824957448983, "value": "Auto-Lib"}
+                {"id": 24824957448983, "value": "Automação de liberação"}
             ]
         }
     }

@@ -52,13 +52,37 @@ def executar_liberacao(login, senha, carteirinha, ticket, headless=True):
             logger.info("Clicando em Prosseguir...")
             page.get_by_role("button", name="Prosseguir").click()
             
-            # Fallback inteligente para o botão "Avançar" que pode ou não aparecer
-            try:
-                logger.info("Aguardando botão 'Avançar' (timeout curto de 5s)...")
-                page.get_by_role("button", name="Avançar").click(timeout=5000)
-                logger.info("Botão 'Avançar' clicado com sucesso.")
-            except Exception:
-                logger.info("Botão 'Avançar' não apareceu ou já foi direto para a tela principal. Prosseguindo...")
+            # --- INTELIGÊNCIA DE NAVEGAÇÃO PÓS-LOGIN (MÁQUINA DE ESTADOS DINÂMICA) ---
+            logger.info("Iniciando orquestração inteligente de navegação pós-login...")
+            
+            # Executa uma busca por estados durante um timeout total de até 25 segundos
+            navegacao_concluida = False
+            for i in range(50): # 50 * 0.5s = 25 segundos
+                # Estado 1: Se o botão "Avançar" estiver visível na tela, clica nele!
+                if page.get_by_role("button", name="Avançar").is_visible():
+                    logger.info("Detectada tela intermediária 'Avançar'. Clicando...")
+                    page.get_by_role("button", name="Avançar").click()
+                    time.sleep(1) # Intervalo curto para iniciar transição
+                    continue # Reinicia o loop para verificar o próximo estado
+                
+                # Estado 2: Se a tela de "Movimentações Pendentes" estiver visível.
+                # Identificamos ela de forma única pela presença do texto "Movimentações Pendentes" ou do botão "Acessar Pendência"
+                elif page.locator('text="Movimentações Pendentes"').is_visible() or page.get_by_role("button", name="Acessar Pendência").is_visible():
+                    logger.info("Detectada tela 'Movimentações Pendentes'. Clicando em Prosseguir...")
+                    page.get_by_role("button", name="Prosseguir").click()
+                    time.sleep(1)
+                    continue
+                
+                # Estado 3: Se o menu principal já estiver carregado (cabeçalho "ATENDIMENTO MÉDICO" visível)
+                elif page.get_by_role("heading", name="ATENDIMENTO MÉDICO").is_visible():
+                    logger.info("Menu principal detectado com sucesso!")
+                    navegacao_concluida = True
+                    break
+                
+                time.sleep(0.5)
+                
+            if not navegacao_concluida:
+                logger.warning("Não foi possível confirmar o menu principal pelas checagens ativas. Tentando prosseguir...")
             
             logger.info("Acessando ATENDIMENTO MÉDICO...")
             page.get_by_role("heading", name="ATENDIMENTO MÉDICO").click()

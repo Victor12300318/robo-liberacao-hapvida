@@ -1,1 +1,17 @@
+# Variáveis de ambiente e segredos
 .env
+
+# Artefatos de build do PyInstaller
+build/
+dist/
+*.spec.bak
+
+# Cache do Python
+__pycache__/
+*.py[cod]
+
+# Screenshots gerados em runtime
+*.png
+
+# Perfil persistente do navegador (gerado em runtime)
+.robo_liberacao_perfil/

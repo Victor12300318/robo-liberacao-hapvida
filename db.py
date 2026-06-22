@@ -2,13 +2,22 @@ import os
 import logging
 import psycopg2
 from psycopg2.extras import RealDictCursor
+import sys
 from dotenv import load_dotenv
 
 # Configura logs
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-load_dotenv()
+# Determina o diretório base (seja do script Python ou do executável do PyInstaller)
+if getattr(sys, 'frozen', False):
+    dir_path = os.path.dirname(sys.executable)
+else:
+    dir_path = os.path.dirname(os.path.abspath(__file__))
+
+# Carrega o .env localizado no mesmo diretório do executável/script
+dotenv_path = os.path.join(dir_path, '.env')
+load_dotenv(dotenv_path)
 
 DB_HOST = os.getenv("DB_HOST")
 DB_PORT = os.getenv("DB_PORT", "5432")

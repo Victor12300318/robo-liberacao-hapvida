@@ -1,4 +1,11 @@
 import os
+import sys
+
+# Força o Playwright a buscar/instalar navegadores na pasta padrão do usuário (%USERPROFILE%\AppData\Local\ms-playwright).
+# Isso é um requisito crítico quando rodamos compilados como executável (.exe) pelo PyInstaller.
+if "LOCALAPPDATA" in os.environ:
+    os.environ["PLAYWRIGHT_BROWSERS_PATH"] = os.path.join(os.environ["LOCALAPPDATA"], "ms-playwright")
+
 import time
 import logging
 from dotenv import load_dotenv
@@ -7,8 +14,15 @@ from dotenv import load_dotenv
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-# Carrega variáveis de ambiente
-load_dotenv()
+# Determina o diretório base (seja do script Python ou do executável do PyInstaller)
+if getattr(sys, 'frozen', False):
+    dir_path = os.path.dirname(sys.executable)
+else:
+    dir_path = os.path.dirname(os.path.abspath(__file__))
+
+# Carrega o .env localizado no mesmo diretório do executável/script
+dotenv_path = os.path.join(dir_path, '.env')
+load_dotenv(dotenv_path)
 
 # Importações dos módulos criados
 from db import init_db, obter_proximo_registro, atualizar_sucesso, atualizar_falha
@@ -20,6 +34,28 @@ def main():
     logger.info("=============================================")
     logger.info("Iniciando Robô de Liberação de Atendimento 24/7")
     logger.info("=============================================")
+    
+    # 0. Garante instalação do navegador Chromium do Playwright de forma programática.
+    # O módulo "playwright.cli" foi removido nas versões recentes (>= 1.40); o ponto de
+    # entrada correto agora é "playwright.__main__.main", que executa o driver Node
+    # empacotado (funciona tanto em Docker quanto no .exe do PyInstaller).
+    # Em Docker a imagem oficial já traz o Chromium, então este passo apenas confirma.
+    try:
+        from playwright.__main__ import main as playwright_cli
+        logger.info("Verificando instalação do navegador Chromium (isso pode demorar na primeira execução)...")
+        argv_original = sys.argv
+        sys.argv = ["playwright", "install", "chromium"]
+        try:
+            playwright_cli()
+        finally:
+            sys.argv = argv_original
+    except SystemExit as e:
+        if e.code in (0, None):
+            logger.info("Navegador Chromium verificado/instalado com sucesso!")
+        else:
+            logger.critical(f"Falha ao instalar o Chromium (código de saída {e.code}).")
+    except Exception as e:
+        logger.critical(f"Não foi possível verificar ou instalar o Chromium: {e}")
     
     # 1. Inicializa o Banco de Dados (Garante criação de tabelas)
     try:

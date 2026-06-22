@@ -5,6 +5,19 @@ from playwright.sync_api import sync_playwright, Playwright
 
 logger = logging.getLogger(__name__)
 
+
+def _perfil_navegador():
+    """
+    Retorna um diretório de perfil persistente e gravável para o Chromium.
+    O login da Hapvida é protegido por reCAPTCHA v3 (baseado em score de bot).
+    Reaproveitar o mesmo perfil entre execuções acumula cookies do Google e eleva
+    o score, evitando o erro "NÃO FOI POSSÍVEL VALIDAR O CAPTCHA".
+    """
+    base = os.path.join(os.path.expanduser("~"), ".robo_liberacao_perfil")
+    os.makedirs(base, exist_ok=True)
+    return base
+
+
 def executar_liberacao(login, senha, carteirinha, ticket, headless=True):
     """
     Executa o fluxo do Playwright para reativação do plano na Hapvida.
@@ -23,34 +36,109 @@ def executar_liberacao(login, senha, carteirinha, ticket, headless=True):
 
     logger.info(f"Iniciando Playwright para Ticket {ticket} (Carteirinha: {carteirinha}). Modo Headless: {headless}")
     
+    # Inicializados como None para o bloco de tratamento de erro não quebrar
+    # caso a própria criação do navegador/página falhe (ex.: falta de X server).
+    context = None
+    page = None
+    
     with sync_playwright() as playwright:
         try:
-            browser = playwright.chromium.launch(
+            # Usa um contexto PERSISTENTE (perfil em disco) em vez de um navegador efêmero.
+            # O login da Hapvida usa reCAPTCHA v3 (score de bot): com perfil limpo o score
+            # é baixo e o servidor responde "NÃO FOI POSSÍVEL VALIDAR O CAPTCHA". Reaproveitar
+            # o perfil + reduzir o fingerprint de automação eleva o score e o login passa.
+            context = playwright.chromium.launch_persistent_context(
+                _perfil_navegador(),
                 headless=headless,
-                args=["--no-sandbox", "--disable-dev-shm-usage"] # Configurações recomendadas para rodar dentro de Docker
+                args=[
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    # Remove o flag de automação detectado pelo reCAPTCHA
+                    "--disable-blink-features=AutomationControlled",
+                ],
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
+                viewport={"width": 1366, "height": 768},
+                locale="pt-BR",
             )
-            context = browser.new_context()
+            # navigator.webdriver=true é fortemente penalizado pelo reCAPTCHA v3; mascaramos.
+            context.add_init_script(
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+            )
             page = context.new_page()
             
             # Define timeout padrão de 30 segundos
             page.set_default_timeout(30000)
             
+            # Aquecimento: visita a home antes do login para estabelecer cookies/reputação,
+            # o que melhora o score do reCAPTCHA v3 na tela de login.
+            logger.info("Aquecendo a sessão na home da Hapvida...")
+            try:
+                page.goto("https://www.hapvida.com.br/")
+                page.wait_for_timeout(4000)
+            except Exception as e_warm:
+                logger.warning(f"Falha no aquecimento da home (ignorando): {e_warm}")
+            
             logger.info("Acessando página de login da Hapvida...")
             page.goto("https://www.hapvida.com.br/pls/webhap/webNewCadastroUsuario.Login")
             
-            logger.info(f"Preenchendo código da empresa (login): {login}")
-            page.locator("input[name=\"pCodigoEmpresa\"]").click()
-            page.locator("input[name=\"pCodigoEmpresa\"]").fill(login)
+            # O login da Hapvida usa reCAPTCHA v3 (score de bot). Com o perfil ainda "frio"
+            # o token pode ser recusado ("NÃO FOI POSSÍVEL VALIDAR O CAPTCHA"). Cada tentativa
+            # esquenta o perfil (cookies do Google), então repetimos o login internamente
+            # algumas vezes antes de desistir — assim não desperdiçamos as tentativas da fila.
+            MAX_TENTATIVAS_LOGIN = 4
+            login_ok = False
+            for tentativa_login in range(1, MAX_TENTATIVAS_LOGIN + 1):
+                logger.info(f"Tentativa de login {tentativa_login}/{MAX_TENTATIVAS_LOGIN} (código: {login})...")
+                
+                page.locator("input[name=\"pCodigoEmpresa\"]").click()
+                page.locator("input[name=\"pCodigoEmpresa\"]").fill(login)
+                
+                # Clica no container de login (passo necessário no site da Hapvida)
+                page.locator("#webNewCadastroUsuario").click()
+                
+                page.locator("#pSenha").click()
+                page.locator("#pSenha").fill(senha)
+                
+                # Aguarda a biblioteca do reCAPTCHA v3 carregar antes de submeter. O próprio
+                # site dispara grecaptcha.execute() no clique de "Prosseguir"; só garantimos
+                # que a lib esteja pronta para não submeter um token vazio.
+                try:
+                    page.wait_for_function(
+                        "() => window.grecaptcha && typeof window.grecaptcha.execute === 'function'",
+                        timeout=20000,
+                    )
+                    page.evaluate("() => new Promise(resolve => window.grecaptcha.ready(resolve))")
+                    time.sleep(1.5)
+                except Exception as e_captcha:
+                    logger.warning(f"Não foi possível confirmar o carregamento do reCAPTCHA; prosseguindo: {e_captcha}")
+                
+                logger.info("Clicando em Prosseguir...")
+                page.get_by_role("button", name="Prosseguir").click()
+                time.sleep(2)
+                
+                # Credencial inválida é definitiva: não adianta repetir, retorna na hora.
+                if page.get_by_text("NÃO CONFEREM", exact=False).is_visible():
+                    logger.error("Login bloqueado: código/senha não conferem.")
+                    page.screenshot(path=caminho_erro, full_page=True)
+                    context.close()
+                    return False, "Código/senha não conferem no sistema da Hapvida.", caminho_erro
+                
+                # Falha de captcha: esquenta o perfil e tenta de novo (recarrega o login).
+                if page.get_by_text("VALIDAR O CAPTCHA", exact=False).is_visible():
+                    logger.warning(f"reCAPTCHA recusado na tentativa {tentativa_login}. Recarregando e tentando novamente...")
+                    time.sleep(3)
+                    page.goto("https://www.hapvida.com.br/pls/webhap/webNewCadastroUsuario.Login")
+                    continue
+                
+                # Sem mensagens de erro: login passou.
+                login_ok = True
+                break
             
-            # Clica no container de login (passo necessário no site da Hapvida)
-            page.locator("#webNewCadastroUsuario").click()
-            
-            logger.info("Preenchendo senha...")
-            page.locator("#pSenha").click()
-            page.locator("#pSenha").fill(senha)
-            
-            logger.info("Clicando em Prosseguir...")
-            page.get_by_role("button", name="Prosseguir").click()
+            if not login_ok:
+                logger.error("Login bloqueado: reCAPTCHA não validado após múltiplas tentativas.")
+                page.screenshot(path=caminho_erro, full_page=True)
+                context.close()
+                return False, "Falha na validação do reCAPTCHA no login da Hapvida (após múltiplas tentativas).", caminho_erro
             
             # --- INTELIGÊNCIA DE NAVEGAÇÃO PÓS-LOGIN (MÁQUINA DE ESTADOS DINÂMICA) ---
             logger.info("Iniciando orquestração inteligente de navegação pós-login...")
@@ -118,7 +206,6 @@ def executar_liberacao(login, senha, carteirinha, ticket, headless=True):
                 # Tira o print da tela de ativo
                 page.screenshot(path=caminho_comprovante, full_page=True)
                 context.close()
-                browser.close()
                 return True, "Cliente já consta ativo no sistema da Hapvida.", caminho_comprovante
                 
             elif estado_detectado == "reativar":
@@ -132,7 +219,6 @@ def executar_liberacao(login, senha, carteirinha, ticket, headless=True):
                 page.screenshot(path=caminho_comprovante, full_page=True)
                 logger.info("Reativação realizada com sucesso! Screenshot salvo.")
                 context.close()
-                browser.close()
                 return True, "Segue em anexo o print da reativação realizada pelo robô.", caminho_comprovante
                 
             else:
@@ -141,21 +227,21 @@ def executar_liberacao(login, senha, carteirinha, ticket, headless=True):
                 # Tira screenshot do erro/tela desconhecida
                 page.screenshot(path=caminho_erro, full_page=True)
                 context.close()
-                browser.close()
                 return False, "Não foi possível determinar o estado (Reativar ou Já Ativo) pós-prosseguir.", caminho_erro
 
         except Exception as e:
             logger.error(f"Erro durante a execução do Playwright: {e}")
             try:
                 # Tenta capturar um screenshot do erro antes de fechar o navegador
-                page.screenshot(path=caminho_erro, full_page=True)
-                logger.info(f"Screenshot do erro salvo em: {caminho_erro}")
+                if page is not None:
+                    page.screenshot(path=caminho_erro, full_page=True)
+                    logger.info(f"Screenshot do erro salvo em: {caminho_erro}")
             except Exception as e_screenshot:
                 logger.error(f"Não foi possível tirar screenshot do erro: {e_screenshot}")
             
             try:
-                context.close()
-                browser.close()
+                if context is not None:
+                    context.close()
             except Exception:
                 pass
                 

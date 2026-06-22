@@ -10,8 +10,16 @@ services:
     # Adiciona suporte para acessar o PostgreSQL rodando no localhost da VPS/Host
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    # Persiste o perfil do navegador (cookies/reputação do Google) entre reinícios.
+    # Isso mantém o score do reCAPTCHA v3 alto e evita reaquecer o login a cada restart.
+    # O contêiner roda como root na imagem do Playwright, então HOME = /root.
+    volumes:
+      - perfil-navegador:/root/.robo_liberacao_perfil
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "3"
+
+volumes:
+  perfil-navegador:

@@ -95,22 +95,39 @@ def executar_liberacao(login, senha, carteirinha, ticket, headless=True):
             # Define timeout padrão de 30 segundos
             page.set_default_timeout(30000)
             
-            # Aquecimento: visita a home antes do login para estabelecer cookies/reputação,
-            # o que melhora o score do reCAPTCHA v3 na tela de login. Quanto mais "humana"
-            # e demorada a interação (scroll, pausas), maior tende a ser o score.
-            logger.info("Aquecendo a sessão na home da Hapvida...")
-            try:
-                page.goto("https://www.hapvida.com.br/")
-                page.wait_for_timeout(3000)
-                # Scroll suave para baixo e para cima, simulando leitura humana.
-                # Gera sinais de interação (mouse/scroll) que elevam o score do reCAPTCHA v3.
-                for _ in range(3):
-                    page.mouse.wheel(0, 600)
+            # Aquecimento AGRESSIVO: simula uma sessão de navegação real antes do login.
+            # O reCAPTCHA v3 dá score maior para sessões que parecem ter histórico/contexto
+            # humano (várias páginas, scroll, mouse, tempo). Em vez de só abrir a home e ir
+            # direto pro login, navegamos por algumas páginas internas com pausas e scroll.
+            logger.info("Aquecendo a sessão navegando pelo site da Hapvida (modo agressivo)...")
+
+            def _scroll_humano(page, ciclos=3):
+                """Faz scroll para baixo/cima com pausas, movendo o mouse, simulando leitura."""
+                try:
+                    for _ in range(ciclos):
+                        page.mouse.move(300 + (_ * 120), 250 + (_ * 80))
+                        page.mouse.wheel(0, 600)
+                        page.wait_for_timeout(1400)
+                    page.mouse.wheel(0, -400)
                     page.wait_for_timeout(1500)
-                page.mouse.wheel(0, -500)
-                page.wait_for_timeout(2500)
-            except Exception as e_warm:
-                logger.warning(f"Falha no aquecimento da home (ignorando): {e_warm}")
+                except Exception as e_sc:
+                    logger.warning(f"Falha no scroll humano (ignorando): {e_sc}")
+
+            # Páginas internas visitadas em sequência para construir contexto de sessão real.
+            paginas_aquecimento = [
+                "https://www.hapvida.com.br/",
+                "https://www2.hapvida.com.br/beneficiario",
+                "https://www2.hapvida.com.br/planos-de-saude-individuais",
+            ]
+            for url_aquec in paginas_aquecimento:
+                try:
+                    logger.info(f"Aquecimento: visitando {url_aquec}")
+                    page.goto(url_aquec)
+                    page.wait_for_timeout(2500)
+                    _scroll_humano(page, ciclos=3)
+                except Exception as e_warm:
+                    logger.warning(f"Falha ao aquecer em {url_aquec} (ignorando): {e_warm}")
+            page.wait_for_timeout(2000)
             
             logger.info("Acessando página de login da Hapvida...")
             page.goto("https://www.hapvida.com.br/pls/webhap/webNewCadastroUsuario.Login")

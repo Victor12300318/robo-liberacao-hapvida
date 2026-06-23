@@ -150,9 +150,26 @@ def executar_liberacao(login, senha, carteirinha, ticket, headless=True):
                         timeout=20000,
                     )
                     page.evaluate("() => new Promise(resolve => window.grecaptcha.ready(resolve))")
-                    time.sleep(1.5)
                 except Exception as e_captcha:
                     logger.warning(f"Não foi possível confirmar o carregamento do reCAPTCHA; prosseguindo: {e_captcha}")
+                
+                # Permanência "humana" ANTES do Prosseguir. O score do reCAPTCHA v3 é calculado
+                # no momento em que o token é gerado (no clique). Quanto mais tempo na página e
+                # mais sinais de interação (mouse/scroll) antes disso, maior o score. Clicar
+                # imediatamente após preencher é um padrão robótico que derruba o score.
+                logger.info("Simulando interação humana na tela de login antes de prosseguir...")
+                try:
+                    page.mouse.move(400, 300)
+                    page.wait_for_timeout(800)
+                    page.mouse.move(700, 450)
+                    page.mouse.wheel(0, 250)
+                    page.wait_for_timeout(1200)
+                    page.mouse.wheel(0, -150)
+                    page.mouse.move(550, 380)
+                except Exception as e_mov:
+                    logger.warning(f"Falha ao simular interação (ignorando): {e_mov}")
+                # Dwell time total antes do clique (preenchimento -> submit) na faixa de ~6-8s.
+                page.wait_for_timeout(5000)
                 
                 logger.info("Clicando em Prosseguir...")
                 page.get_by_role("button", name="Prosseguir").click()

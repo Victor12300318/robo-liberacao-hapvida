@@ -66,6 +66,12 @@ def main():
     # Define se rodará headless (sem interface). Padrão é True para VPS/Docker.
     headless_mode = os.getenv("HEADLESS", "True").lower() == "true"
 
+    # Cool-down entre tickets: processar liberações em rajada rebaixa o score do reCAPTCHA v3.
+    # Esperamos um intervalo entre um ticket e outro para o score se recuperar. Configurável
+    # via .env (COOLDOWN_ENTRE_TICKETS, em segundos); padrão 240s (folgado para VPS sem proxy,
+    # onde o IP de datacenter já parte de um score baixo).
+    cooldown_segundos = int(os.getenv("COOLDOWN_ENTRE_TICKETS", "240"))
+
     # 2. Loop de execução contínuo (modo fila única)
     while True:
         try:
@@ -161,6 +167,11 @@ def main():
                             logger.info(f"Screenshot de erro local {caminho_arquivo} removido.")
                         except Exception as e_rm:
                             logger.warning(f"Não foi possível remover o print de erro {caminho_arquivo}: {e_rm}")
+                
+                # Cool-down após CADA ticket (sucesso ou falha) para preservar o score do
+                # reCAPTCHA v3. Sem isso, o robô processa em rajada e queima a reputação do perfil/IP.
+                logger.info(f"Aguardando {cooldown_segundos}s antes do próximo ticket (preserva o score do reCAPTCHA)...")
+                time.sleep(cooldown_segundos)
                             
             else:
                 # Se não há registros pendentes, aguarda 10 segundos para nova consulta

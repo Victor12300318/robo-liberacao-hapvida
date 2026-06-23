@@ -18,6 +18,31 @@ def _perfil_navegador():
     return base
 
 
+def _config_proxy():
+    """
+    Monta a configuração de proxy do Playwright a partir do .env, ou None se não houver.
+    Em VPS o IP é de datacenter, o que derruba o score do reCAPTCHA v3. Rotear o tráfego
+    por um proxy/IP RESIDENCIAL faz o login parecer um usuário doméstico real.
+
+    Variáveis (.env):
+      PROXY_SERVER   ex.: http://gate.provedor.com:8000  (ou socks5://host:porta)
+      PROXY_USERNAME (opcional)
+      PROXY_PASSWORD (opcional)
+    """
+    server = os.getenv("PROXY_SERVER")
+    if not server:
+        return None
+    proxy = {"server": server}
+    usuario = os.getenv("PROXY_USERNAME")
+    senha = os.getenv("PROXY_PASSWORD")
+    if usuario:
+        proxy["username"] = usuario
+    if senha:
+        proxy["password"] = senha
+    logger.info(f"Proxy configurado via .env: {server}")
+    return proxy
+
+
 def executar_liberacao(login, senha, carteirinha, ticket, headless=True):
     """
     Executa o fluxo do Playwright para reativação do plano na Hapvida.
@@ -50,6 +75,7 @@ def executar_liberacao(login, senha, carteirinha, ticket, headless=True):
             context = playwright.chromium.launch_persistent_context(
                 _perfil_navegador(),
                 headless=headless,
+                proxy=_config_proxy(),
                 args=[
                     "--no-sandbox",
                     "--disable-dev-shm-usage",
@@ -70,11 +96,19 @@ def executar_liberacao(login, senha, carteirinha, ticket, headless=True):
             page.set_default_timeout(30000)
             
             # Aquecimento: visita a home antes do login para estabelecer cookies/reputação,
-            # o que melhora o score do reCAPTCHA v3 na tela de login.
+            # o que melhora o score do reCAPTCHA v3 na tela de login. Quanto mais "humana"
+            # e demorada a interação (scroll, pausas), maior tende a ser o score.
             logger.info("Aquecendo a sessão na home da Hapvida...")
             try:
                 page.goto("https://www.hapvida.com.br/")
-                page.wait_for_timeout(4000)
+                page.wait_for_timeout(3000)
+                # Scroll suave para baixo e para cima, simulando leitura humana.
+                # Gera sinais de interação (mouse/scroll) que elevam o score do reCAPTCHA v3.
+                for _ in range(3):
+                    page.mouse.wheel(0, 600)
+                    page.wait_for_timeout(1500)
+                page.mouse.wheel(0, -500)
+                page.wait_for_timeout(2500)
             except Exception as e_warm:
                 logger.warning(f"Falha no aquecimento da home (ignorando): {e_warm}")
             
@@ -90,14 +124,22 @@ def executar_liberacao(login, senha, carteirinha, ticket, headless=True):
             for tentativa_login in range(1, MAX_TENTATIVAS_LOGIN + 1):
                 logger.info(f"Tentativa de login {tentativa_login}/{MAX_TENTATIVAS_LOGIN} (código: {login})...")
                 
-                page.locator("input[name=\"pCodigoEmpresa\"]").click()
-                page.locator("input[name=\"pCodigoEmpresa\"]").fill(login)
+                # Digitação "humana": click + type com atraso entre teclas, em vez de fill
+                # instantâneo. Preenchimento instantâneo é um sinal forte de automação para
+                # o reCAPTCHA v3; digitar tecla a tecla com pausas eleva o score.
+                campo_codigo = page.locator("input[name=\"pCodigoEmpresa\"]")
+                campo_codigo.click()
+                page.wait_for_timeout(400)
+                campo_codigo.type(login, delay=140)
                 
                 # Clica no container de login (passo necessário no site da Hapvida)
                 page.locator("#webNewCadastroUsuario").click()
+                page.wait_for_timeout(500)
                 
-                page.locator("#pSenha").click()
-                page.locator("#pSenha").fill(senha)
+                campo_senha = page.locator("#pSenha")
+                campo_senha.click()
+                page.wait_for_timeout(400)
+                campo_senha.type(senha, delay=140)
                 
                 # Aguarda a biblioteca do reCAPTCHA v3 carregar antes de submeter. O próprio
                 # site dispara grecaptcha.execute() no clique de "Prosseguir"; só garantimos
@@ -123,11 +165,15 @@ def executar_liberacao(login, senha, carteirinha, ticket, headless=True):
                     context.close()
                     return False, "Código/senha não conferem no sistema da Hapvida.", caminho_erro
                 
-                # Falha de captcha: esquenta o perfil e tenta de novo (recarrega o login).
+                # Falha de captcha: NÃO adianta repetir em rajada (retry rápido afunda ainda
+                # mais o score do reCAPTCHA v3). Aplicamos um backoff crescente para dar tempo
+                # do score se recuperar antes de recarregar e tentar de novo.
                 if page.get_by_text("VALIDAR O CAPTCHA", exact=False).is_visible():
-                    logger.warning(f"reCAPTCHA recusado na tentativa {tentativa_login}. Recarregando e tentando novamente...")
-                    time.sleep(3)
+                    espera = 15 * tentativa_login  # 15s, 30s, 45s, ...
+                    logger.warning(f"reCAPTCHA recusado na tentativa {tentativa_login}. Aguardando {espera}s (backoff) antes de recarregar...")
+                    time.sleep(espera)
                     page.goto("https://www.hapvida.com.br/pls/webhap/webNewCadastroUsuario.Login")
+                    page.wait_for_timeout(2500)
                     continue
                 
                 # Sem mensagens de erro: login passou.
